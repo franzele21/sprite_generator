@@ -1,1 +1,4 @@
 sprites.csv
+~lock.sprites.csv#
+__pycache__
+*.pth
