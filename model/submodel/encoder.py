@@ -36,10 +36,12 @@ class Encoder(nn.Module):
                  reparam_size: int,
                  randomize: bool=True,
                  return_mean_logvar: bool=False,
+                 rand_intensity: float=0.5
                  ):
         super().__init__()
         self.randomize = randomize
         self.return_mean_logvar = return_mean_logvar
+        self.rand_intensity = rand_intensity
 
         self.conv = nn.Sequential(
             *[[nn.Conv2d(*conv_layers[i//2]), nn.Sigmoid()][i%2] for i in range(len(conv_layers)*2)]
@@ -67,7 +69,7 @@ class Encoder(nn.Module):
     
     def reparameterization(self, mean, var):
         if self.randomize:
-            epsilon = torch.randn_like(var)        
+            epsilon = torch.randn_like(var) * self.rand_intensity
         else:
             epsilon = torch.ones_like(var)
         z = mean + var*epsilon 
