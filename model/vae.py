@@ -1,3 +1,15 @@
+"""
+TODO:
+    - le décodeur fait des gros blocs (voir l'image en root)
+        - raffiner le upscaling ?
+        - faire une structure en entonnoir sur les dernières couches ?
+        - ResNet ?
+    - les colonnes du bas et de droite n'ont pas la même couleur
+        - dans le upscaling y'a un pb je pense
+
+    - Trouver un VAE qui ressort une bonne reconstruction
+"""
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -240,7 +252,7 @@ if __name__ == "__main__":
     )
     # Flattened output of conv layers: 32 * 2 * 2 = 128
     enc_mlp_layers = (128, 64, 32) 
-    latent_size = 24
+    latent_size = 32
     encoder_final_conv_shape = (32, 2, 2) # (Channels, Height, Width)
     original_img_dims = (64, 64)         # (Height, Width)
     input_channels = enc_conv_layers[0][0] # Should be 1
