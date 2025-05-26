@@ -44,7 +44,9 @@ class Encoder(nn.Module):
         self.rand_intensity = rand_intensity
 
         self.conv = nn.Sequential(
-            *[[nn.Conv2d(*conv_layers[i//2]), nn.Sigmoid()][i%2] for i in range(len(conv_layers)*2)]
+            *[[nn.Conv2d(*conv_layers[i//3]), 
+            nn.Sigmoid(),
+            nn.BatchNorm2d(conv_layers[i//3][1])][i%3] for i in range(len(conv_layers)*3)]
         )
         self.mlp = nn.Sequential(
             *[[nn.Linear(mlp_layers[i//2], mlp_layers[i//2+1]), nn.ReLU()][i%2] for i in range(len(mlp_layers)*2-2)]
@@ -87,6 +89,9 @@ if __name__ == "__main__":
     mlp_layers = (128, 64, 32)
     reparam_size = 24
 
+    device = torch.device("cpu" if torch.cuda.is_available() else "cpu")
+    print(device)
+
     encoder = Encoder(conv_layers, mlp_layers, reparam_size)
-    summary(encoder, (1, 64, 64))
+    summary(encoder, (1, 64, 64), device="cpu")
 

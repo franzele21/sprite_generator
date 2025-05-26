@@ -251,8 +251,8 @@ if __name__ == "__main__":
         (24, 32, 2, 1, 1)    # In: (24, 1, 1) -> Out: (32, 2, 2)
     )
     # Flattened output of conv layers: 32 * 2 * 2 = 128
-    enc_mlp_layers = (128, 64, 32) 
-    latent_size = 32
+    enc_mlp_layers = (128, 64, 32) # 128, 128, 128 ?
+    latent_size = 32 # 128 ?
     encoder_final_conv_shape = (32, 2, 2) # (Channels, Height, Width)
     original_img_dims = (64, 64)         # (Height, Width)
     input_channels = enc_conv_layers[0][0] # Should be 1
