@@ -82,9 +82,9 @@ if __name__ == "__main__":
     from torchsummary import summary
 
     conv_layers = (
-    (1, 16, 16, 8, 0),
-    (16, 24, 8, 4, 2),
-    (24, 32, 2, 1, 1)
+        (1, 16, 16, 8, 0),
+        (16, 24, 8, 4, 2),
+        (24, 32, 2, 1, 1)
     )
     mlp_layers = (128, 64, 32)
     reparam_size = 24
