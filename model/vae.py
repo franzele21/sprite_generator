@@ -17,7 +17,7 @@ from torch.utils.data import Dataset, DataLoader # For Dataset and DataLoader
 import pandas as pd # Example for CSV handling in Dataset, not directly used by train_model
 
 # Assuming Encoder and Decoder are defined in submodel.py
-from submodel import Encoder, Decoder 
+from .submodel import Encoder, Decoder 
 
 from tqdm import tqdm
 
@@ -234,10 +234,10 @@ class VAE(nn.Module):
         
         print("--- Training finished ---")
     
-    def save(self, path="vae.pth"):
+    def save(self, path="model/vae.pth"):
         torch.save(self.state_dict(), path)
     
-    def load(self, path="vae.pth"):
+    def load(self, path="model/vae.pth"):
         self.load_state_dict(torch.load(path))
 
 # Example of how to use it:
@@ -272,7 +272,7 @@ if __name__ == "__main__":
 
     # Create dummy data (e.g., 100 samples)
     dummy_dataset = CSVDataset(
-        "../sprites.csv",
+        "./sprites.csv",
         50_000
     )
     

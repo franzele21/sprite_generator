@@ -2,292 +2,326 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-class Decoder(nn.Module):
+class EnhancedDecoder(nn.Module):
     """
-    Decoder of the R-Conv-VAE
-    --------------------------
-    Takes a latent space vector `z` as input and reconstructs an image.
-    It is designed to be the inverse of the provided Encoder structure.
-
-    Args:
-        conv_layers_encoder_config (tuple[tuple[int, ...], ...]):
-            The architecture of the Encoder's convolutional layers.
-            Each inner tuple contains arguments for `nn.Conv2d`
-            (e.g., (in_channels, out_channels, kernel_size, stride, padding)).
-
-        mlp_layers_encoder_config (tuple[int, ...]):
-            The architecture of the Encoder's MLP layers (sizes of layers).
-            Example: (128, 64, 32) means Linear(128,64) then Linear(64,32).
-            The first element is the flattened size of the Encoder's conv output.
-
-        reparam_size (int):
-            Size of the latent space vector `z` (input to this Decoder).
-
-        encoder_conv_output_shape (tuple[int, int, int]):
-            The shape (Channels, Height, Width) of the output tensor from the
-            Encoder's final convolutional layer (before flattening).
-
-        original_image_dims (tuple[int, int]):
-            The spatial dimensions (Height, Width) of the original image
-            that was fed into the Encoder. This is crucial for calculating
-            the correct `output_padding` for the transposed convolutions
-            to reconstruct the image to its original size.
+    Enhanced Decoder with Funnel Architecture for R-Conv-VAE
+    --------------------------------------------------------
+    This decoder uses a funnel-like structure to produce clearer reconstructions:
+    1. Significantly increases dimensionality in early stages
+    2. Uses progressive refinement with pooling operations
+    3. Implements skip connections for better gradient flow
+    4. Uses batch normalization for training stability
+    
+    The architecture follows: MLP -> Upsample + High Dim Conv -> Funnel Conv + Pooling -> Final Refinement
     """
+    
     def __init__(self,
                  conv_layers_encoder_config: tuple[tuple[int, ...], ...],
                  mlp_layers_encoder_config: tuple[int, ...],
                  reparam_size: int,
-                 encoder_conv_output_shape: tuple[int, int, int], # (Channels, Height, Width)
-                 original_image_dims: tuple[int, int] # (Height, Width)
+                 encoder_conv_output_shape: tuple[int, int, int],
+                 original_image_dims: tuple[int, int],
+                 expansion_factor: int = 8,  # How much to expand dimensionality initially
+                 use_skip_connections: bool = True,
+                 pooling_type: str = "adaptive_avg"  # "max", "avg", "adaptive_avg", "adaptive_max"
                 ):
         super().__init__()
         self.encoder_conv_output_shape = encoder_conv_output_shape
         self.reparam_size = reparam_size
         self.original_image_dims = original_image_dims
-
-        # --- 1. MLP Part ---
-        # Reverses the Encoder's MLP structure.
-        # Encoder MLP went from mlp_layers_encoder_config[0] down to mlp_layers_encoder_config[-1].
-        # Decoder MLP goes from reparam_size up to mlp_layers_encoder_config[0].
+        self.expansion_factor = expansion_factor
+        self.use_skip_connections = use_skip_connections
+        self.pooling_type = pooling_type
         
-        # Node sizes for the Decoder's MLP layers
-        # Example: mlp_layers_encoder_config = (128, 64, 32), reparam_size = 24
-        # decoder_mlp_nodes will be [24, 32, 64, 128] (from latent to flattened conv size)
-        decoder_mlp_nodes = [self.reparam_size] + list(mlp_layers_encoder_config)[::-1]
+        # Calculate expanded conv shape first
+        C_orig, H_orig, W_orig = self.encoder_conv_output_shape
+        self.expanded_conv_channels = C_orig * expansion_factor
         
-        mlp_decoder_layers = []
-        for i in range(len(decoder_mlp_nodes) - 1):
-            mlp_decoder_layers.append(nn.Linear(decoder_mlp_nodes[i], decoder_mlp_nodes[i+1]))
-            mlp_decoder_layers.append(nn.ReLU()) # Matching Encoder's MLP activation (ReLU)
+        # We'll upsample the spatial dimensions as well for more detail
+        self.expanded_conv_shape = (self.expanded_conv_channels, H_orig * 2, W_orig * 2)
         
-        self.mlp = nn.Sequential(*mlp_decoder_layers)
+        # Calculate the required MLP output size to match the expanded conv input
+        self.expanded_mlp_size = (self.expanded_conv_shape[0] * 
+                                 self.expanded_conv_shape[1] * 
+                                 self.expanded_conv_shape[2])
         
-        # Output of MLP has size decoder_mlp_nodes[-1], which is mlp_layers_encoder_config[0].
-        # This must be equal to C_encoder_conv_out * H_encoder_conv_out * W_encoder_conv_out.
-        expected_mlp_output_dim = mlp_layers_encoder_config[0]
-        actual_mlp_output_dim = (self.encoder_conv_output_shape[0] *
-                                 self.encoder_conv_output_shape[1] *
-                                 self.encoder_conv_output_shape[2])
-        if expected_mlp_output_dim != actual_mlp_output_dim:
-            raise ValueError(
-                f"Decoder MLP output size mismatch: Expected {expected_mlp_output_dim} (from mlp_layers_encoder_config[0]), "
-                f"but got {actual_mlp_output_dim} (from flattening encoder_conv_output_shape {self.encoder_conv_output_shape}). "
-                f"Ensure configurations are consistent."
-            )
-
-        # --- 2. Transposed Convolutional Part ---
-        # This part reconstructs the image from the reshaped MLP output.
-        # It requires calculating intermediate shapes from the encoder to determine
-        # the correct `output_padding` for each `ConvTranspose2d` layer.
-
-        # Store details of each encoder convolutional layer's spatial transformations
-        self.encoder_conv_details = [] 
+        # --- 1. Enhanced MLP Part with Significant Expansion ---
+        # First expand to much higher dimensionality, then gradually reduce
+        expanded_mlp_nodes = [
+            self.reparam_size,
+            self.reparam_size * 4,      # 4x expansion
+            self.reparam_size * 8,      # 8x expansion  
+            self.expanded_mlp_size      # Final expanded size (calculated above)
+        ]
         
-        H_curr, W_curr = self.original_image_dims
-        for i in range(len(conv_layers_encoder_config)):
-            enc_cfg = conv_layers_encoder_config[i]
-            # Assuming enc_cfg format: (in_channels, out_channels, kernel_size, stride, padding, ...)
-            K_orig, S_orig, P_orig = enc_cfg[2], enc_cfg[3], enc_cfg[4]
-
-            K_h, K_w = self._get_hw_params(K_orig, "kernel_size")
-            S_h, S_w = self._get_hw_params(S_orig, "stride")
-            P_h, P_w = self._get_hw_params(P_orig, "padding")
-
-            H_in_enc, W_in_enc = H_curr, W_curr # Input dimensions to this encoder conv layer
-            # Calculate output dimensions of this encoder conv layer
-            H_out_enc = (H_in_enc + 2 * P_h - K_h) // S_h + 1
-            W_out_enc = (W_in_enc + 2 * P_w - K_w) // S_w + 1
+        mlp_layers = []
+        for i in range(len(expanded_mlp_nodes) - 1):
+            mlp_layers.append(nn.Linear(expanded_mlp_nodes[i], expanded_mlp_nodes[i+1]))
+            mlp_layers.append(nn.BatchNorm1d(expanded_mlp_nodes[i+1]))
+            mlp_layers.append(nn.LeakyReLU(0.2))
+            mlp_layers.append(nn.Dropout(0.1))  # Light regularization
+        
+        self.mlp = nn.Sequential(*mlp_layers)
+        
+        # --- 2. Initial Upsampling and High-Dimensional Convolutions ---
+        # Start with very high channel count and gradually reduce
+        
+        initial_conv_layers = []
+        
+        # First conv block - refine the high-dimensional features
+        initial_conv_layers.extend([
+            nn.Conv2d(self.expanded_conv_channels, self.expanded_conv_channels, 
+                     kernel_size=3, padding=1),
+            nn.BatchNorm2d(self.expanded_conv_channels),
+            nn.LeakyReLU(0.2),
             
-            self.encoder_conv_details.append({
-                'H_in_enc': H_in_enc, 'W_in_enc': W_in_enc, 
-                'H_out_enc': H_out_enc, 'W_out_enc': W_out_enc,
-                'K_h': K_h, 'K_w': K_w, 'S_h': S_h, 'S_w': S_w, 
-                'P_h': P_h, 'P_w': P_w,
-                'enc_in_c': enc_cfg[0], 'enc_out_c': enc_cfg[1]
-            })
-            H_curr, W_curr = H_out_enc, W_out_enc # Output becomes input for the next encoder layer
-
-        # Verify that the final calculated H,W match the provided encoder_conv_output_shape's spatial part
-        if not (H_curr == self.encoder_conv_output_shape[1] and W_curr == self.encoder_conv_output_shape[2]):
-            raise ValueError(
-                f"Calculated final encoder spatial dimensions ({H_curr}, {W_curr}) mismatch "
-                f"the provided encoder_conv_output_shape's spatial dimensions "
-                f"({self.encoder_conv_output_shape[1]}, {self.encoder_conv_output_shape[2]}). "
-                f"Please check original_image_dims and conv_layers_encoder_config."
-            )
-
-        # Build the transposed convolutional layers for the decoder
-        deconv_layers = []
-        num_encoder_conv_layers = len(conv_layers_encoder_config)
-
-        # Initial H, W for deconvolution process is the output of the last encoder convolution
-        H_in_deconv, W_in_deconv = self.encoder_conv_output_shape[1], self.encoder_conv_output_shape[2]
-
-        for i in range(num_encoder_conv_layers):
-            # Deconv layers are built in reverse order of encoder conv layers
-            enc_conv_idx = num_encoder_conv_layers - 1 - i
-            details = self.encoder_conv_details[enc_conv_idx]
-
-            # Deconv layer parameters (mirrored from encoder's conv layer)
-            dec_in_c = details['enc_out_c']  # Input channels for deconv = output channels of corresponding enc_conv
-            dec_out_c = details['enc_in_c'] # Output channels for deconv = input channels of corresponding enc_conv
-            
-            K_h, K_w = details['K_h'], details['K_w']
-            S_h, S_w = details['S_h'], details['S_w']
-            P_h, P_w = details['P_h'], details['P_w']
-
-            # Target output dimensions for this deconv layer are the INPUT dimensions of the corresponding encoder conv layer
-            H_out_target_deconv, W_out_target_deconv = details['H_in_enc'], details['W_in_enc']
-
-            # Calculate output_padding for ConvTranspose2d.
-            # Formula for ConvTranspose2d output: H_out = (H_in - 1)*S - 2*P + K + OP
-            # So, OP = H_out_target - ((H_in_deconv - 1)*S - 2*P + K)
-            op_h = H_out_target_deconv - ((H_in_deconv - 1) * S_h - 2 * P_h + K_h)
-            op_w = W_out_target_deconv - ((W_in_deconv - 1) * S_w - 2 * P_w + K_w)
-
-            # PyTorch constraint: 0 <= output_padding < stride
-            if not (0 <= op_h < S_h if S_h > 0 else op_h == 0):
-                # This might indicate an architecture that isn't perfectly reversible with standard output_padding,
-                # or an edge case. Clamping is a pragmatic approach.
-                print(f"Warning: Calculated op_h ({op_h}) for S_h={S_h} is out of range [0, S_h-1) for deconv layer {i}. Clamping.")
-                op_h = max(0, min(op_h, S_h - 1 if S_h > 0 else 0)) # Clamp op_h
-            if not (0 <= op_w < S_w if S_w > 0 else op_w == 0):
-                print(f"Warning: Calculated op_w ({op_w}) for S_w={S_w} is out of range [0, S_w-1) for deconv layer {i}. Clamping.")
-                op_w = max(0, min(op_w, S_w - 1 if S_w > 0 else 0)) # Clamp op_w
-            
-            deconv_layers.append(nn.ConvTranspose2d(
-                in_channels=dec_in_c, 
-                out_channels=dec_out_c, 
-                kernel_size=(K_h, K_w), 
-                stride=(S_h, S_w), 
-                padding=(P_h, P_w),
-                output_padding=(op_h, op_w)
-            ))
-
-            # Update H_in_deconv, W_in_deconv for the next deconv layer:
-            # The input to the next deconv layer is the target output of this current deconv layer.
-            H_in_deconv = H_out_target_deconv 
-            W_in_deconv = W_out_target_deconv
-
-            # Activation function:
-            # Encoder used Sigmoid after each Conv. For Decoder:
-            # - Intermediate layers: ReLU (common practice)
-            # - Final layer: Sigmoid (to output image pixels in [0,1] range)
-            if i < num_encoder_conv_layers - 1:
-                deconv_layers.append(nn.ReLU()) 
-            else:
-                deconv_layers.append(nn.Sigmoid()) 
+            nn.Conv2d(self.expanded_conv_channels, self.expanded_conv_channels // 2, 
+                     kernel_size=3, padding=1),
+            nn.BatchNorm2d(self.expanded_conv_channels // 2),
+            nn.LeakyReLU(0.2),
+        ])
         
-        self.deconv = nn.Sequential(*deconv_layers)
-
-    @staticmethod
-    def _get_hw_params(param_val, name_for_error_msg: str) -> tuple[int, int]:
-        """Converts an int or tuple (K) or (K,K) to a (K_h, K_w) tuple."""
-        if isinstance(param_val, int):
-            return param_val, param_val
-        elif isinstance(param_val, tuple) and len(param_val) == 1: # e.g., kernel_size=(k,)
-            return param_val[0], param_val[0]
-        elif isinstance(param_val, tuple) and len(param_val) == 2: # e.g., kernel_size=(kh, kw)
-            return param_val[0], param_val[1]
-        else:
-            raise ValueError(
-                f"{name_for_error_msg} must be an int or a tuple of 1 or 2 ints. Got {param_val}"
+        self.initial_conv = nn.Sequential(*initial_conv_layers)
+        
+        # --- 3. Funnel Architecture with Progressive Refinement ---
+        self.funnel_blocks = nn.ModuleList()
+        
+        # Calculate progression from current size to target size
+        current_channels = self.expanded_conv_channels // 2
+        current_h, current_w = self.expanded_conv_shape[1], self.expanded_conv_shape[2]
+        target_h, target_w = self.original_image_dims
+        target_channels = conv_layers_encoder_config[0][0]  # Final output channels
+        
+        # Create funnel blocks that progressively:
+        # 1. Increase spatial resolution
+        # 2. Decrease channel count
+        # 3. Apply pooling for feature integration
+        
+        num_funnel_blocks = 4
+        channel_reduction_factor = (current_channels / target_channels) ** (1 / num_funnel_blocks)
+        
+        for i in range(num_funnel_blocks):
+            next_channels = max(target_channels, int(current_channels / channel_reduction_factor))
+            
+            # Calculate target spatial size for this block
+            scale_factor = ((target_h / current_h) ** (1 / (num_funnel_blocks - i)), 
+                           (target_w / current_w) ** (1 / (num_funnel_blocks - i)))
+            
+            block = FunnelBlock(
+                in_channels=current_channels,
+                out_channels=next_channels,
+                scale_factor=scale_factor,
+                pooling_type=self.pooling_type,
+                use_skip=self.use_skip_connections and i > 0
             )
-
+            
+            self.funnel_blocks.append(block)
+            current_channels = next_channels
+            current_h = int(current_h * scale_factor[0])
+            current_w = int(current_w * scale_factor[1])
+        
+        # --- 4. Final Refinement Layers ---
+        self.final_refinement = nn.Sequential(
+            nn.Conv2d(current_channels, current_channels, kernel_size=3, padding=1),
+            nn.BatchNorm2d(current_channels),
+            nn.LeakyReLU(0.2),
+            
+            nn.Conv2d(current_channels, target_channels, kernel_size=1),  # 1x1 conv for channel adjustment
+            nn.Sigmoid()  # Output activation
+        )
+        
+        # --- 5. Final Upsampling (if needed) ---
+        self.final_upsample = None
+        if current_h != target_h or current_w != target_w:
+            self.final_upsample = nn.Upsample(size=(target_h, target_w), mode='bilinear', align_corners=False)
+    
     def forward(self, z: torch.Tensor) -> torch.Tensor:
-        """
-        Forward pass of the Decoder.
-        Args:
-            z (torch.Tensor): Latent space tensor of shape (batch_size, reparam_size).
-        Returns:
-            torch.Tensor: Reconstructed image tensor.
-        """
-        # 1. Pass latent vector through MLP
-        x = self.mlp(z) # Output shape: (batch_size, mlp_layers_encoder_config[0])
-        
-        # 2. Reshape MLP output to 4D tensor for deconvolution
-        # (batch_size, Channels_enc_conv_out, Height_enc_conv_out, Width_enc_conv_out)
         batch_size = z.shape[0]
-        C_enc_out, H_enc_out, W_enc_out = self.encoder_conv_output_shape
-        try:
-            x = x.view(batch_size, C_enc_out, H_enc_out, W_enc_out)
-        except RuntimeError as e:
-            raise RuntimeError(
-                f"Error reshaping MLP output in Decoder: {e}. "
-                f"MLP output size: {x.shape}, Target view shape: ({batch_size}, {C_enc_out}, {H_enc_out}, {W_enc_out}). "
-                f"Ensure mlp_layers_encoder_config[0] == C*H*W of encoder_conv_output_shape."
-            ) from e
-
-        # 3. Pass through transposed convolutional layers to reconstruct image
-        x = self.deconv(x)
+        
+        # 1. MLP expansion
+        x = self.mlp(z)
+        
+        # 2. Reshape to high-dimensional conv tensor
+        C_exp, H_exp, W_exp = self.expanded_conv_shape
+        x = x.view(batch_size, C_exp, H_exp, W_exp)
+        
+        # 3. Initial convolution refinement
+        x = self.initial_conv(x)
+        
+        # 4. Progressive funnel refinement
+        skip_connections = []
+        for i, block in enumerate(self.funnel_blocks):
+            if self.use_skip_connections and i > 0:
+                x = block(x, skip_connections[-1] if skip_connections else None)
+            else:
+                x = block(x)
+            
+            # Store for potential skip connections
+            if self.use_skip_connections:
+                skip_connections.append(x.clone())
+        
+        # 5. Final refinement
+        x = self.final_refinement(x)
+        
+        # 6. Final upsampling if needed
+        if self.final_upsample is not None:
+            x = self.final_upsample(x)
         
         return x
 
 
-if __name__ == "__main__":
-    from torchsummary import summary
+class FunnelBlock(nn.Module):
+    """
+    A single block in the funnel architecture that:
+    1. Applies pooling for feature integration
+    2. Upsamples spatially
+    3. Reduces channels
+    4. Optionally uses skip connections
+    """
+    
+    def __init__(self, in_channels: int, out_channels: int, scale_factor: tuple[float, float],
+                 pooling_type: str = "adaptive_avg", use_skip: bool = False):
+        super().__init__()
+        self.use_skip = use_skip
+        self.scale_factor = scale_factor
+        
+        # Pooling layer for feature integration
+        if pooling_type == "max":
+            self.pool = nn.AdaptiveMaxPool2d((in_channels // 4, in_channels // 4))
+        elif pooling_type == "avg":
+            self.pool = nn.AdaptiveAvgPool2d((in_channels // 4, in_channels // 4))
+        elif pooling_type == "adaptive_avg":
+            self.pool = nn.AdaptiveAvgPool2d(1)  # Global average pooling
+        elif pooling_type == "adaptive_max":
+            self.pool = nn.AdaptiveMaxPool2d(1)  # Global max pooling
+        else:
+            self.pool = nn.Identity()
+        
+        # Main convolution path
+        self.conv_path = nn.Sequential(
+            # First conv - feature refinement
+            nn.Conv2d(in_channels, in_channels, kernel_size=3, padding=1),
+            nn.BatchNorm2d(in_channels),
+            nn.LeakyReLU(0.2),
+            
+            # Second conv - channel reduction
+            nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1),
+            nn.BatchNorm2d(out_channels),
+            nn.LeakyReLU(0.2),
+        )
+        
+        # Skip connection adaptation (if using skip connections)
+        if use_skip:
+            self.skip_adapt = nn.Conv2d(in_channels, out_channels, kernel_size=1)
+        
+        # Upsampling
+        self.upsample = nn.Upsample(scale_factor=scale_factor, mode='bilinear', align_corners=False)
+    
+    def forward(self, x: torch.Tensor, skip: torch.Tensor = None) -> torch.Tensor:
+        # Apply pooling for feature integration (helps reduce pixelation)
+        if not isinstance(self.pool, nn.Identity):
+            # Get pooled features and broadcast back
+            pooled = self.pool(x)
+            pooled_expanded = F.interpolate(pooled, size=x.shape[-2:], mode='bilinear', align_corners=False)
+            x = x + 0.1 * pooled_expanded  # Subtle feature integration
+        
+        # Main convolution path
+        out = self.conv_path(x)
+        
+        # Skip connection
+        if self.use_skip and skip is not None:
+            # Adapt skip connection to match current tensor
+            skip_adapted = self.skip_adapt(skip)
+            skip_resized = F.interpolate(skip_adapted, size=out.shape[-2:], mode='bilinear', align_corners=False)
+            out = out + 0.3 * skip_resized  # Weighted skip connection
+        
+        # Upsample
+        out = self.upsample(out)
+        
+        return out
 
-    # --- Configuration mirroring the Encoder example ---
-    # Encoder's convolutional layer configurations
-    # (in_channels, out_channels, kernel_size, stride, padding)
+
+# Legacy wrapper to maintain compatibility with existing code
+class Decoder(EnhancedDecoder):
+    """Wrapper class to maintain backward compatibility"""
+    def __init__(self, *args, **kwargs):
+        # Set default enhanced parameters
+        enhanced_kwargs = {
+            'expansion_factor': 8,
+            'use_skip_connections': True,
+            'pooling_type': 'adaptive_avg'
+        }
+        enhanced_kwargs.update(kwargs)
+        super().__init__(*args, **enhanced_kwargs)
+
+
+if __name__ == "__main__":
+    # --- Configuration ---
     enc_conv_layers = (
-        (1, 16, 16, 8, 0),    # Output: (16, 7, 7) for (1, 64, 64) input
-        (16, 24, 8, 4, 2),   # Output: (24, 1, 1) for (16, 7, 7) input
-        (24, 32, 2, 1, 1)    # Output: (32, 2, 2) for (24, 1, 1) input
+        (1, 16, 16, 8, 0),    
+        (16, 24, 8, 4, 2),   
+        (24, 32, 2, 1, 1)    
     )
     
-    # Encoder's MLP layer configurations (sizes of layers)
-    # Input to MLP is flattened output of last conv: 32*2*2 = 128
     enc_mlp_layers = (128, 64, 32) 
-    
-    # Size of the latent space (reparameterization output)
     latent_size = 24
-    
-    # Shape of the output from Encoder's convolutional part (before flattening)
-    # (Channels, Height, Width)
     encoder_final_conv_shape = (32, 2, 2) 
-    
-    # Original image dimensions fed to the Encoder
-    original_img_dims = (64, 64) # (Height, Width)
+    original_img_dims = (64, 64)
 
-    # --- Instantiate Decoder ---
-    decoder = Decoder(
+    # --- Test Enhanced Decoder ---
+    print("Testing Enhanced Decoder...")
+    enhanced_decoder = EnhancedDecoder(
+        conv_layers_encoder_config=enc_conv_layers,
+        mlp_layers_encoder_config=enc_mlp_layers,
+        reparam_size=latent_size,
+        encoder_conv_output_shape=encoder_final_conv_shape,
+        original_image_dims=original_img_dims,
+        expansion_factor=8,
+        use_skip_connections=True,
+        pooling_type="adaptive_avg"
+    )
+
+    batch_size = 4
+    dummy_latent_z = torch.randn(batch_size, latent_size)
+    reconstructed_image = enhanced_decoder(dummy_latent_z)
+
+    print(f"Enhanced Decoder instantiated successfully.")
+    print(f"Input latent z shape: {dummy_latent_z.shape}")
+    print(f"Reconstructed image shape: {reconstructed_image.shape}")
+    print(f"Number of parameters: {sum(p.numel() for p in enhanced_decoder.parameters()):,}")
+
+    # Print model summary
+    try:
+        from torchsummary import summary
+        print("\nEnhanced Decoder Summary:")
+        summary(enhanced_decoder, input_size=(latent_size,))
+    except ImportError:
+        print("\ntorchsummary not installed. Skipping summary.")
+    except Exception as e:
+        print(f"\nError during summary: {e}")
+
+    # Test backward compatibility
+    print("\nTesting backward compatibility...")
+    legacy_decoder = Decoder(
         conv_layers_encoder_config=enc_conv_layers,
         mlp_layers_encoder_config=enc_mlp_layers,
         reparam_size=latent_size,
         encoder_conv_output_shape=encoder_final_conv_shape,
         original_image_dims=original_img_dims
     )
-
-    # --- Test with a dummy latent vector ---
-    batch_size = 4
-    dummy_latent_z = torch.randn(batch_size, latent_size)
-    reconstructed_image = decoder(dummy_latent_z)
-
-    print(f"Decoder instantiated successfully.")
-    print(f"Input latent z shape: {dummy_latent_z.shape}")
-    print(f"Reconstructed image shape: {reconstructed_image.shape}") # Expected: (batch_size, 1, 64, 64)
-
-    # --- Print model summary (if torchsummary is available) ---
-    # The input to the decoder is the latent vector, so input_size for summary is (latent_size,)
+    
+    legacy_output = legacy_decoder(dummy_latent_z)
+    print(f"Legacy wrapper output shape: {legacy_output.shape}")
+    
+    # Compare parameter counts
+    print(f"Enhanced decoder parameters: {sum(p.numel() for p in enhanced_decoder.parameters()):,}")
+    print(f"Legacy wrapper parameters: {sum(p.numel() for p in legacy_decoder.parameters()):,}")
+    
+    # Print legacy summary
     try:
-        print("\nDecoder Summary:")
-        summary(decoder, input_size=(latent_size,))
+        print("\nLegacy Decoder Summary:")
+        summary(legacy_decoder, input_size=(latent_size,))
     except ImportError:
-        print("\n torchsummary not installed. Skipping summary.")
+        print("\ntorchsummary not installed. Skipping summary.")
     except Exception as e:
-        print(f"\nError during summary: {e}")
-
-    # --- Verification of specific layer outputs (optional detailed check) ---
-    # print("\n--- Detailed Layer Check ---")
-    # test_mlp_out = decoder.mlp(dummy_latent_z)
-    # print(f"MLP output shape: {test_mlp_out.shape}") # Expected: (batch_size, 128)
-    # C_enc, H_enc, W_enc = decoder.encoder_conv_output_shape
-    # test_reshaped = test_mlp_out.view(batch_size, C_enc, H_enc, W_enc)
-    # print(f"Reshaped MLP output shape: {test_reshaped.shape}") # Expected: (batch_size, 32, 2, 2)
-
-    # print("\nDeconv layers:")
-    # current_tensor = test_reshaped
-    # for i, layer in enumerate(decoder.deconv):
-    #     current_tensor = layer(current_tensor)
-    #     print(f"After deconv layer {i} ({type(layer).__name__}): {current_tensor.shape}")
+        print(f"\nError during legacy summary: {e}")
