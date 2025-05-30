@@ -45,7 +45,7 @@ class Encoder(nn.Module):
 
         self.conv = nn.Sequential(
             *[[nn.Conv2d(*conv_layers[i//3]), 
-            nn.Sigmoid(),
+            nn.ReLU(),
             nn.BatchNorm2d(conv_layers[i//3][1])][i%3] for i in range(len(conv_layers)*3)]
         )
         self.mlp = nn.Sequential(

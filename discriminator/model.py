@@ -74,13 +74,13 @@ class CSVDataset(Dataset):
         flattened_image_data = self.pixel_data[idx]
 
         image_tensor = flattened_image_data.flatten()
-        image_tensor /= image_tensor.max()
+        image_tensor /= 255
 
         image_tensor = image_tensor.view(1, 64, 64)
 
         y = 1
         if np.random.random() < 0.5:
-            image_tensor += 0.1*torch.randn(1, 64, 64)
+            image_tensor += 0.5*torch.randn(1, 64, 64)
             y = 0
 
         if self.transform:
@@ -99,8 +99,9 @@ class Discriminator(nn.Module):
 
         self.conv = nn.Sequential(
             *[[nn.Conv2d(*conv_layers[i//3]), 
-            nn.Sigmoid(),
-            nn.BatchNorm2d(conv_layers[i//3][1])][i%3] for i in range(len(conv_layers)*3)]
+               nn.BatchNorm2d(conv_layers[i//3][1]),
+               nn.ReLU(),
+               ][i%3] for i in range(len(conv_layers)*3)]
         )
         self.mlp = nn.Sequential(
             *[[nn.Linear(mlp_layers[i//2], mlp_layers[i//2+1]), 
@@ -133,6 +134,7 @@ class Discriminator(nn.Module):
                 pred = self(X)
 
                 y = y.unsqueeze(1).float()
+                # print(y, pred)
 
                 loss = F.binary_cross_entropy(pred, y)
 
@@ -140,11 +142,14 @@ class Discriminator(nn.Module):
                 optimizer.step()
 
                 losses[-1] += loss.item()
-            print(losses)
+            print(losses[-1])
         return losses
 
-
-
+    def save(self, path="discriminator.pth"):
+        torch.save(self.state_dict(), path)
+    
+    def load(self, path="discriminator.pth"):
+        self.load_state_dict(torch.load(path))
 
     
 if __name__ == "__main__":
@@ -163,8 +168,8 @@ if __name__ == "__main__":
     summary(discri, (1, 64, 64), device="cpu")
 
     dummy_dataset = CSVDataset(
-        "../sprites.csv",
-        5_000
+        "./sprites.csv",
+        10_000
     )
     print(len(dummy_dataset))
 
@@ -181,9 +186,12 @@ if __name__ == "__main__":
 
     train_loader = DataLoader(dummy_dataset, batch_size=16, shuffle=True, num_workers=0) 
 
-    optimizer = torch.optim.Adam(discri.parameters())
+    optimizer = torch.optim.Adam(discri.parameters(), 1e-5)
 
     discri.train(
         data_loader=train_loader,
-        optimizer=optimizer
+        optimizer=optimizer,
+        epoch=50
     )
+
+    discri.save()
