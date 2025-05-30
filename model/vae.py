@@ -17,7 +17,10 @@ from torch.utils.data import Dataset, DataLoader # For Dataset and DataLoader
 import pandas as pd # Example for CSV handling in Dataset, not directly used by train_model
 
 # Assuming Encoder and Decoder are defined in submodel.py
-from .submodel import Encoder, Decoder 
+try:
+    from .submodel import Encoder, Decoder 
+except:
+    from submodel import Encoder, Decoder 
 
 from tqdm import tqdm
 
@@ -86,6 +89,13 @@ class CSVDataset(Dataset):
         flattened_image_data = self.pixel_data[idx]
 
         image_tensor = flattened_image_data.flatten()
+        # Will create a image only with 0 and 1
+        # Here, whenever a pixel isn't 0, it will be 1
+        # image_tensor[image_tensor>0] = 1
+	# Here we round the pixel to the nearest value (either 0 or 1)
+        # image_tensor = torch.round(image_tensor/image_tensor.max())
+
+	# Normal/base case
         image_tensor /= image_tensor.max()
 
         image_tensor = image_tensor.view(1, 64, 64)
