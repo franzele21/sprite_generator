@@ -56,6 +56,7 @@ class Encoder(nn.Module):
         self.mean = nn.Linear(mlp_layers[-1], reparam_size)
     
     def forward(self, x):
+
         z = self.conv(x)
         z = torch.flatten(z, start_dim=1)
         z = self.mlp(z)
@@ -77,21 +78,20 @@ class Encoder(nn.Module):
         z = mean + var*epsilon 
         return z
 
-
 if __name__ == "__main__":
     from torchsummary import summary
 
     conv_layers = (
-    (1, 16, 16, 8, 0),
-    (16, 24, 8, 4, 2),
-    (24, 32, 2, 1, 1)
+        (1, 16, 16, 8, 0),
+        (16, 24, 8, 4, 2),
+        (24, 32, 2, 1, 1)
     )
     mlp_layers = (128, 64, 32)
     reparam_size = 24
 
-    device = torch.device("cpu" if torch.cuda.is_available() else "cpu")
-    print(device)
+    # Check if CUDA is available
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
 
-    encoder = Encoder(conv_layers, mlp_layers, reparam_size)
-    summary(encoder, (1, 64, 64), device="cpu")
-
+    encoder = Encoder(conv_layers, mlp_layers, reparam_size).to(device)
+    summary(encoder, (1, 64, 64), device=f"{device}")
