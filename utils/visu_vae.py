@@ -31,7 +31,7 @@ vae = VAE(
     original_image_dims=original_img_dims
 )
 
-vae.load("model/vae_Sat_07_19h_31m.pth")
+vae.load("model/vae_Sat_07_22h_20m.pth")
 vae.eval()
 # Create dummy data (e.g., 100 samples)
 dummy_dataset = CSVDataset(

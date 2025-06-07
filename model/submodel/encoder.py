@@ -34,48 +34,65 @@ class SubEncoder(nn.Module):
                  conv_layers: tuple[tuple[int]], 
                  mlp_layers: tuple[int], 
                  reparam_size: int,
-                 randomize: bool=True,
-                 return_mean_logvar: bool=False,
-                 rand_intensity: float=0.5
-                 ):
+                 randomize: bool = True,
+                 return_mean_logvar: bool = False):
         super().__init__()
         self.randomize = randomize
         self.return_mean_logvar = return_mean_logvar
-        self.rand_intensity = rand_intensity
 
-        self.conv = nn.Sequential(
-            *[[nn.Conv2d(*conv_layers[i//3]), 
-            nn.Sigmoid(),
-            nn.BatchNorm2d(conv_layers[i//3][1])][i%3] for i in range(len(conv_layers)*3)]
-        )
-        self.mlp = nn.Sequential(
-            *[[nn.Linear(mlp_layers[i//2], mlp_layers[i//2+1]), nn.ReLU()][i%2] for i in range(len(mlp_layers)*2-2)]
-        )
+        # Build convolutional layers properly
+        conv_modules = []
+        for layer_params in conv_layers:
+            conv_modules.extend([
+                nn.Conv2d(*layer_params),
+                nn.ReLU(inplace=True),  # Changed from Sigmoid to ReLU
+                nn.BatchNorm2d(layer_params[1])
+            ])
+        self.conv = nn.Sequential(*conv_modules)
+        
+        # Build MLP layers properly
+        mlp_modules = []
+        for i in range(len(mlp_layers) - 1):
+            mlp_modules.extend([
+                nn.Linear(mlp_layers[i], mlp_layers[i + 1]),
+                nn.ReLU(inplace=True)
+            ])
+        self.mlp = nn.Sequential(*mlp_modules)
 
-        self.log_var = nn.Linear(mlp_layers[-1], reparam_size)
-        self.mean = nn.Linear(mlp_layers[-1], reparam_size)
+        # Reparameterization layers
+        self.mean_layer = nn.Linear(mlp_layers[-1], reparam_size)
+        self.logvar_layer = nn.Linear(mlp_layers[-1], reparam_size)
     
     def forward(self, x):
+        # Convolutional feature extraction
         z = self.conv(x)
         z = torch.flatten(z, start_dim=1)
         z = self.mlp(z)
 
-        mean_val, log_var_val = self.mean(z), self.log_var(z)
+        # Get mean and log variance
+        mean = self.mean_layer(z)
+        logvar = self.logvar_layer(z)
 
-        z = self.reparameterization(mean_val, log_var_val)
+        # Reparameterization trick
+        z_sampled = self.reparameterization(mean, logvar)
 
         if self.return_mean_logvar:
-            return z, mean_val, log_var_val
+            return z_sampled, mean, logvar
         else:
-            return z
+            return z_sampled
     
-    def reparameterization(self, mean, var):
+    def reparameterization(self, mean, logvar):
+        """
+        Proper reparameterization trick: z = μ + σ * ε
+        where σ = exp(0.5 * log_var) and ε ~ N(0,1)
+        """
         if self.randomize:
-            epsilon = torch.randn_like(var) * self.rand_intensity
+            # Standard deviation from log variance
+            std = torch.exp(0.5 * logvar)
+            eps = torch.randn_like(std)
+            return mean + std * eps
         else:
-            epsilon = torch.ones_like(var)
-        z = mean + var*epsilon 
-        return z
+            return mean
 
 class Encoder(nn.Module):
     def __init__(self,
@@ -83,37 +100,43 @@ class Encoder(nn.Module):
                  conv_layers: tuple[tuple[int]], 
                  mlp_layers: tuple[int], 
                  reparam_size: int,
-                 randomize: bool=True,
-                 return_mean_logvar: bool=True,
-                 rand_intensity: float=0.5):
+                 randomize: bool = True,
+                 return_mean_logvar: bool = True):
         super().__init__()
         self.return_mean_logvar = return_mean_logvar
+        self.n_encoders = n_encoders
+        self.reparam_size = reparam_size
 
-        self.encoders = [
-            SubEncoder(conv_layers, mlp_layers, 
-                       reparam_size, randomize,
-                       return_mean_logvar, rand_intensity)
-            for x in range(n_encoders)
-        ]
-        self.embedding = nn.Linear(reparam_size*n_encoders, reparam_size)
+        # Use ModuleList for proper parameter registration
+        self.encoders = nn.ModuleList([
+            SubEncoder(conv_layers, mlp_layers, reparam_size, 
+                      randomize, return_mean_logvar)
+            for _ in range(n_encoders)
+        ])
+        
+        # Embedding layer to combine multiple encoder outputs
+        self.embedding = nn.Linear(reparam_size * n_encoders, reparam_size)
     
     def forward(self, x):
-        all_z = [subenc(x) for subenc in self.encoders]
+        encoder_outputs = [encoder(x) for encoder in self.encoders]
 
         if self.return_mean_logvar:
-            all_mean = [i[1] for i in all_z]
-            all_logvar = [i[2] for i in all_z]
-            all_mean = torch.concat(all_mean)
-            all_logvar = torch.concat(all_logvar)
-
-            all_z = [i[0] for i in all_z]
-        all_z = torch.concat(all_z, axis=1)
-
-        z = F.relu(self.embedding(all_z))
-
-        if self.return_mean_logvar:
-            return z, all_mean, all_logvar
+            # Separate z, mean, and logvar
+            all_z = torch.cat([output[0] for output in encoder_outputs], dim=1)
+            all_mean = torch.cat([output[1] for output in encoder_outputs], dim=1)
+            all_logvar = torch.cat([output[2] for output in encoder_outputs], dim=1)
+            
+            # Combine representations
+            z = F.relu(self.embedding(all_z))
+            
+            # Average the mean and logvar (or you could embed them too)
+            combined_mean = torch.mean(all_mean.view(-1, self.n_encoders, self.reparam_size), dim=1)
+            combined_logvar = torch.mean(all_logvar.view(-1, self.n_encoders, self.reparam_size), dim=1)
+            
+            return z, combined_mean, combined_logvar
         else:
+            all_z = torch.cat([output for output in encoder_outputs], dim=1)
+            z = F.relu(self.embedding(all_z))
             return z
 
 if __name__ == "__main__":
