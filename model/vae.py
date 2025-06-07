@@ -28,6 +28,7 @@ import pandas as pd
 import torch
 from torch.utils.data import Dataset
 import numpy as np
+import time 
 
 class CSVDataset(Dataset):
     def __init__(self,
@@ -108,6 +109,7 @@ class CSVDataset(Dataset):
 
 class VAE(nn.Module):
     def __init__(self, 
+                 n_encoders: int,
                  conv_layers_encoder_config: tuple[tuple[int, ...], ...],
                  mlp_layers_encoder_config: tuple[int, ...],
                  reparam_size: int,
@@ -116,7 +118,8 @@ class VAE(nn.Module):
                 ):
         super().__init__()
 
-        self.encoder = Encoder(conv_layers_encoder_config, 
+        self.encoder = Encoder(n_encoders,
+                               conv_layers_encoder_config, 
                                mlp_layers_encoder_config, 
                                reparam_size,
                                randomize=True, # Ensure encoder can sample during training
@@ -169,12 +172,12 @@ class VAE(nn.Module):
 
         print(f"Starting training on {device} for {epochs} epochs...")
 
-        for epoch in tqdm(range(epochs)):
+        for epoch in tqdm(range(epochs), total=epochs):
             total_epoch_loss = 0.0
             total_mse_loss = 0.0
             total_kld_loss = 0.0
 
-            for batch_idx, data_batch in enumerate(data_loader):
+            for batch_idx, data_batch in tqdm(enumerate(data_loader), total=len(data_loader), leave=False):
                 # Ensure data_batch provides image tensors.
                 # If data_batch is a tuple/list (e.g., [images, labels]), take the images.
                 if isinstance(data_batch, (list, tuple)):
@@ -228,7 +231,7 @@ class VAE(nn.Module):
                     avg_batch_loss = loss.item() / images.size(0)
                     avg_batch_mse = mse.item() / images.size(0)
                     avg_batch_kld = (kld_weight * kld.item()) / images.size(0)
-                    print(f"Epoch [{epoch+1}/{epochs}], Batch [{batch_idx+1}/{len(data_loader)}], "
+                    print(f" Epoch [{epoch+1}/{epochs}], Batch [{batch_idx+1}/{len(data_loader)}], "
                           f"Avg Batch Loss: {avg_batch_loss:.4f} "
                           f"(MSE: {avg_batch_mse:.4f}, KLD: {avg_batch_kld:.4f})")
             
@@ -269,6 +272,7 @@ if __name__ == "__main__":
 
     # --- Instantiate VAE ---
     vae = VAE(
+        n_encoders=5,
         conv_layers_encoder_config=enc_conv_layers,
         mlp_layers_encoder_config=enc_mlp_layers,
         reparam_size=latent_size,
@@ -309,4 +313,4 @@ if __name__ == "__main__":
 
     print("Example training run completed.")
 
-    vae.save()
+    vae.save(f"model/vae_{time.strftime('%a_%d_%Hh_%Mm')}.pth")

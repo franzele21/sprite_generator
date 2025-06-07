@@ -10,7 +10,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-class Encoder(nn.Module):
+class SubEncoder(nn.Module):
     """
     Encoder
     -------
@@ -77,6 +77,44 @@ class Encoder(nn.Module):
         z = mean + var*epsilon 
         return z
 
+class Encoder(nn.Module):
+    def __init__(self,
+                 n_encoders: int,
+                 conv_layers: tuple[tuple[int]], 
+                 mlp_layers: tuple[int], 
+                 reparam_size: int,
+                 randomize: bool=True,
+                 return_mean_logvar: bool=True,
+                 rand_intensity: float=0.5):
+        super().__init__()
+        self.return_mean_logvar = return_mean_logvar
+
+        self.encoders = [
+            SubEncoder(conv_layers, mlp_layers, 
+                       reparam_size, randomize,
+                       return_mean_logvar, rand_intensity)
+            for x in range(n_encoders)
+        ]
+        self.embedding = nn.Linear(reparam_size*n_encoders, reparam_size)
+    
+    def forward(self, x):
+        all_z = [subenc(x) for subenc in self.encoders]
+
+        if self.return_mean_logvar:
+            all_mean = [i[1] for i in all_z]
+            all_logvar = [i[2] for i in all_z]
+            all_mean = torch.concat(all_mean)
+            all_logvar = torch.concat(all_logvar)
+
+            all_z = [i[0] for i in all_z]
+        all_z = torch.concat(all_z, axis=1)
+
+        z = F.relu(self.embedding(all_z))
+
+        if self.return_mean_logvar:
+            return z, all_mean, all_logvar
+        else:
+            return z
 
 if __name__ == "__main__":
     from torchsummary import summary
@@ -90,8 +128,7 @@ if __name__ == "__main__":
     reparam_size = 24
 
     device = torch.device("cpu" if torch.cuda.is_available() else "cpu")
-    print(device)
 
-    encoder = Encoder(conv_layers, mlp_layers, reparam_size)
+    encoder = Encoder(5, conv_layers, mlp_layers, reparam_size)
     summary(encoder, (1, 64, 64), device="cpu")
 

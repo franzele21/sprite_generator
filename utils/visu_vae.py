@@ -23,6 +23,7 @@ input_channels = enc_conv_layers[0][0] # Should be 1
 
 # --- Instantiate VAE ---
 vae = VAE(
+    5,
     conv_layers_encoder_config=enc_conv_layers,
     mlp_layers_encoder_config=enc_mlp_layers,
     reparam_size=latent_size,
@@ -30,7 +31,7 @@ vae = VAE(
     original_image_dims=original_img_dims
 )
 
-vae.load("model/vae_enhanced_decoder.pth")
+vae.load("model/vae_Sat_07_19h_31m.pth")
 vae.eval()
 # Create dummy data (e.g., 100 samples)
 dummy_dataset = CSVDataset(
@@ -40,15 +41,15 @@ dummy_dataset = CSVDataset(
 
 # DataLoader handles batching and can use multiple workers for loading
 # If your Dataset handles large CSVs (e.g., by chunking), DataLoader works with it.
-train_loader = DataLoader(dummy_dataset, batch_size=1, shuffle=True, num_workers=0) # num_workers > 0 for parallel loading
+train_loader = DataLoader(dummy_dataset, batch_size=2, shuffle=True, num_workers=0) # num_workers > 0 for parallel loading
 
 train_iter = iter(train_loader)
 
 f, ax = plt.subplots(4, 2)
 for y in range(4):
     tmp_img = next(train_iter)
-    ax[y][0].imshow(tmp_img.reshape((64, 64, 1)))
-    ax[y][1].imshow(vae(tmp_img)[0].detach().numpy().reshape((64, 64, 1)))
+    ax[y][0].imshow(tmp_img[0].reshape((64, 64, 1)))
+    ax[y][1].imshow(vae(tmp_img)[0][0].detach().numpy().reshape((64, 64, 1)))
 
 
 plt.savefig(f"result_{time.ctime().replace(' ' , '_')}")
