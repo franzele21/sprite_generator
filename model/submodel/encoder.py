@@ -63,7 +63,7 @@ class Encoder(nn.Module):
             self.conv_output_size = conv_output[0].numel()
 
         prev_size = self.conv_output_size
-        
+
         resnet_modules = []
         for i in range(skip_mlp_nb):
             resnet_modules.extend(
@@ -101,6 +101,8 @@ class Encoder(nn.Module):
                 case nn.modules.linear.Linear:
                     if i > 5:
                         z = layer(z+skip_connexion[-2])
+                    else:
+                        z = layer(z)
                 case nn.modules.batchnorm.BatchNorm1d:
                     z = layer(z)
                 case nn.modules.activation.ReLU:
