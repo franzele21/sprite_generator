@@ -8,47 +8,58 @@ from model.vae import *
 import time
 from torch.utils.data import DataLoader
 
-# --- VAE Configuration ---
-enc_conv_layers = (
-    (1, 16, 16, 8, 0),    # In: (1, 64, 64) -> Out: (16, 7, 7)
-    (16, 24, 8, 4, 2),   # In: (16, 7, 7) -> Out: (24, 1, 1)
-    (24, 32, 2, 1, 1)    # In: (24, 1, 1) -> Out: (32, 2, 2)
-)
-# Flattened output of conv layers: 32 * 2 * 2 = 128
-enc_mlp_layers = (128, 64, 32) # 128, 128, 128 ?
-latent_size = 32 # 128 ?
-encoder_final_conv_shape = (32, 2, 2) # (Channels, Height, Width)
-original_img_dims = (64, 64)         # (Height, Width)
-input_channels = enc_conv_layers[0][0] # Should be 1
 
-# --- Instantiate VAE ---
-vae = VAE(
-    conv_layers_encoder_config=enc_conv_layers,
-    mlp_layers_encoder_config=enc_mlp_layers,
-    reparam_size=latent_size,
-    encoder_conv_output_shape=encoder_final_conv_shape,
-    original_image_dims=original_img_dims
-)
+def create_dataloader():
+    dummy_dataset = CSVDataset(
+        "./sprites.csv",
+        40
+    )
+    train_loader = DataLoader(dummy_dataset, batch_size=1, shuffle=True, num_workers=0) # num_workers > 0 for parallel loading
 
-vae.load("model/vae_enhanced_decoder.pth")
-vae.eval()
-# Create dummy data (e.g., 100 samples)
-dummy_dataset = CSVDataset(
-    "./sprites.csv",
-    40
-)
+    return train_loader
 
-# DataLoader handles batching and can use multiple workers for loading
-# If your Dataset handles large CSVs (e.g., by chunking), DataLoader works with it.
-train_loader = DataLoader(dummy_dataset, batch_size=1, shuffle=True, num_workers=0) # num_workers > 0 for parallel loading
+def make_images(vae, train_loader):
+    train_iter = iter(train_loader)
 
-train_iter = iter(train_loader)
-
-f, ax = plt.subplots(4, 2)
-for y in range(4):
-    tmp_img = next(train_iter)
-    ax[y][0].imshow(tmp_img.reshape((64, 64, 1)))
-    ax[y][1].imshow(vae(tmp_img)[0].detach().numpy().reshape((64, 64, 1)))
+    f, ax = plt.subplots(4, 2)
+    for y in range(4):
+        tmp_img = next(train_iter)
+        ax[y][0].imshow(tmp_img.reshape((64, 64, 1)))
+        ax[y][1].imshow(vae(tmp_img)[0].detach().numpy().reshape((64, 64, 1)))
 
 
-plt.savefig(f"result_{time.ctime().replace(' ' , '_')}")
+    plt.savefig(f"result_{time.ctime().replace(' ' , '_')}")
+if __name__ == "__main__":
+    # --- VAE Configuration ---
+    enc_conv_layers = (
+        # (in_ch, out_ch, kernel, stride, padding)
+        (1, 26, 28, 8, 4),
+        (26, 22, 4, 4, 5),
+        (22, 16, 5, 5, 1)
+    )
+    
+    enc_mlp_layers = (256, 256, 256, 256, 256)
+    latent_size = 256
+    encoder_final_conv_shape = (32, 2, 2)
+    original_img_dims = (64, 64)
+    num_resnet_blocks = 2
+
+    
+    # Create VAE
+    vae = VAE(
+        conv_layers_encoder_config=enc_conv_layers,
+        mlp_layers_encoder_config=enc_mlp_layers,
+        reparam_size=latent_size,
+        num_resnet_blocks=num_resnet_blocks,
+        expansion_factor=3,
+        original_image_dims=original_img_dims,
+        rand_intensity=0.2
+    )
+
+    vae.load("model/vae_Tue_24_17h_26m.pth")
+    vae.eval()
+
+    train_loader = create_dataloader()
+
+    make_images(vae, train_loader)
+
