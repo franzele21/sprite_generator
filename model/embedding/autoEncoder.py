@@ -10,6 +10,7 @@ import os
 import random
 import string
 from datetime import datetime
+import numpy as np
 
 conv_layers_config = [
         [1, 16, 2, 1, 1], 
@@ -159,11 +160,17 @@ class autoAE(nn.Module):
 if __name__ == "__main__":
     # read data
     df = pd.read_csv("./sprites.csv")
+    orientation = df.iloc[:, 2].values
     df = df.iloc[:,3:]
     X = df.values.astype('float32')
 
     # process data
     X = X.reshape(-1, 1, 64, 64) / 255.0
+    for i, mode in enumerate(orientation):
+        if mode == 1:
+            X[i,0] = np.rot90(X[i,0], k=1)   # rotation 90° à gauche
+        elif mode == 2:
+            X[i,0] = np.rot90(X[i,0], k=3)
     x_tensor = torch.tensor(X, dtype=torch.float32)
 
     # create batch
