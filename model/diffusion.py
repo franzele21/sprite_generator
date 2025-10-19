@@ -28,7 +28,7 @@ class Config:
     timesteps: int = 200  # number of diffusion steps (small for speed)
     img_size: int = 28
     in_channels: int = 1
-    save_model_path: str = "./diffusion_output/simple_ddpm_mnist_1.pt"
+    save_model_path: str = "./diffusion_output/simple_ddpm_mnist_1.pt" # à changer
     log_interval: int = 100
     sample_every: int = 1  # sample once per epoch
     num_samples: int = 16
