@@ -3,3 +3,6 @@ sprites.csv
 __pycache__
 *.pth
 *.zip
+
+diffusion_output
+data
