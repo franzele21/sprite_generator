@@ -3,3 +3,8 @@ sprites.csv
 __pycache__
 *.pth
 *.zip
+clean_sprites_latents.csv
+clean_sprites.csv
+loops_summary.csv
+model/embedding/trained/
+model/RNN/trained/

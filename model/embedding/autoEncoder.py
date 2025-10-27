@@ -13,14 +13,15 @@ from datetime import datetime
 import numpy as np
 
 conv_layers_config = [
-        [1, 16, 2, 1, 1], 
-        [16, 24, 2, 1, 0], 
-        [24, 32, 3, 1, 2]
+        [1, 4, 2, 1, 0], 
+        [4, 8, 3, 3, 0], 
+        [8, 16, 3, 3, 0],
+        [16, 24, 2, 1, 0]
     ]
 
 
 class autoAE(nn.Module):
-    def __init__(self, conv_config, input_dim):
+    def __init__(self, conv_config, input_dim, load_path=None):
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         rand_suffix = ''.join(random.choices(string.ascii_lowercase + string.digits, k=4))
         self.model_name = f"autoAE_{timestamp}_{rand_suffix}" 
@@ -51,6 +52,9 @@ class autoAE(nn.Module):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.to(self.device)
         print(f"Using device: {self.device}")
+
+        if load_path is not None:
+            self.load(load_path)
             
     def forward(self, x):
         z =  self.encoder(x)
@@ -59,7 +63,7 @@ class autoAE(nn.Module):
         return y
     
     def fit(self, dataLoader:DataLoader, lossFunc:str="mseloss",
-            opt:str="adam", nepochs:int=20):
+            opt:str ="adam", nepochs:int=20):
 
         crit_methods={
             "mseloss":nn.MSELoss,
@@ -103,6 +107,46 @@ class autoAE(nn.Module):
         progress.close()
         return result
     
+    def encode(self, x):
+        """
+        return latent vector
+        x : Tensor [B, C, H, W]
+        """
+        self.eval()
+        with torch.no_grad():
+            x = x.to(self.device)
+            z = self.encoder(x)
+        return z
+
+    def decode(self, z):
+        """
+        decode from latent space
+        z : Tensor [B, latent_dim, H', W']
+        """
+        self.eval()
+        with torch.no_grad():
+            z = z.to(self.device)
+            y = self.decoder(z)
+            y = torch.sigmoid(y)
+        return y
+
+    def get_latent_space(self, data):
+        """
+        take a dataloader and return the latent space representation
+        data : DataLoader
+        """
+        self.eval()
+        latent_vectors = []
+        with torch.no_grad():
+            for batch, _ in data:
+                batch = batch.to(self.device)
+                z = self.encoder(batch)
+                latent_vector = nn.Flatten()(z)
+                latent_vectors.append(latent_vector.cpu().numpy())
+        
+        latent_vectors = np.vstack(latent_vectors)
+        return latent_vectors
+    
     def save(self, folder_name="trained"):
         base_dir = os.path.dirname(os.path.abspath(__file__))
         save_dir = os.path.join(base_dir, folder_name)
@@ -113,6 +157,18 @@ class autoAE(nn.Module):
         torch.save(self.state_dict(), path)
         print(f"Model saved at: {path}")
         return path
+    
+    def load(self, path):
+        """
+            load a trained model from .pt file
+        """
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"Le fichier '{path}' est introuvable.")
+        
+        state_dict = torch.load(path)
+        self.load_state_dict(state_dict)
+        self.eval()
+        print(f"Model loaded from : {path}")
     
     def predict(self, data, batch_size=32, folder_name="reconstructed"):
         self.eval()
@@ -159,74 +215,39 @@ class autoAE(nn.Module):
 
 if __name__ == "__main__":
     # read data
-    df = pd.read_csv("./sprites.csv")
-    orientation = df.iloc[:, 2].values
-    df = df.iloc[:,3:]
+    df = pd.read_csv("./clean_sprites.csv")
+    # orientation = df.iloc[:, 2].values
+    df = df.iloc[:,2:]
     X = df.values.astype('float32')
 
     # process data
     X = X.reshape(-1, 1, 64, 64) / 255.0
-    for i, mode in enumerate(orientation):
-        if mode == 1:
-            X[i,0] = np.rot90(X[i,0], k=1)   # rotation 90° à gauche
-        elif mode == 2:
-            X[i,0] = np.rot90(X[i,0], k=3)
+    # for i, mode in enumerate(orientation):
+    #     if mode == 1:
+    #         X[i,0] = np.rot90(X[i,0], k=1)   # rotation 90° à gauche
+    #     elif mode == 2:
+    #         X[i,0] = np.rot90(X[i,0], k=3)
     x_tensor = torch.tensor(X, dtype=torch.float32)
 
     # create batch
     dataset = TensorDataset(x_tensor, x_tensor)
     dataLoader = DataLoader(dataset, batch_size=32, shuffle=True)
 
-    ae = autoAE(conv_config=conv_layers_config, input_dim=64)
+    # create and train autoencoder
+    # ae = autoAE(conv_config=conv_layers_config, input_dim=64)
 
-    ae.fit(dataLoader,lossFunc="l1loss", opt="adam")
-    ae.save()
-    ae.predict(x_tensor)
+    # ae.fit(dataLoader,lossFunc="l1loss", opt="adam")
+    # ae.save()
+    # ae.predict(x_tensor)
 
-    # criterion = nn.MSELoss()
-    # optimizer = optim.Adam(ae.parameters(), lr=1e-3)
-
-    # num_epochs = 20
-    # progress =tqdm(range(20*len(dataLoader)))
-    # for epoch in range(num_epochs):
-    #     ae.train()
-    #     total_loss = 0
-
-    #     for batch, _ in dataLoader:
-    #         batch = batch.to(device)
-
-    #         outputs = ae(batch)
-    #         loss = criterion(outputs, batch)
-
-    #         optimizer.zero_grad()
-    #         loss.backward()
-    #         optimizer.step()
-
-    #         total_loss += loss.item()
-    #         progress.update()
-    #         progress.refresh()
-
-    #     #print(f"Epoch [{epoch+1}/{num_epochs}], Loss: {total_loss/len(dataLoader):.6f}")
-    # progress.close()
-    # torch.save(ae.state_dict(), "autoencoder.pth")
-    # ae.eval()
-    # with torch.no_grad():
-    #     imgs, _ = next(iter(dataLoader))
-    #     imgs = imgs.to(device)
-    #     outputs = ae(imgs)
-
-    # imgs = imgs.cpu().numpy()
-    # outputs = outputs.cpu().numpy()
-
-    # for i in range(5):
-    #     plt.subplot(2,5,i+1)
-    #     plt.imshow(imgs[i,0], cmap='gray')
-    #     plt.axis('off')
-    #     plt.ylabel("Original")
-    #     plt.subplot(2,5,i+6)
-    #     plt.imshow(outputs[i,0], cmap='gray')
-    #     plt.axis('off')
-    #     plt.ylabel("Reconstruit")
-    # plt.show()
-
-    # plt.savefig("reconstruction.png", dpi=300, bbox_inches='tight')
+    # load and predict
+    ae2 = autoAE(conv_config=conv_layers_config, input_dim=64, load_path="./model/embedding/trained/autoAE_20251026_194448_mm34.pt")
+    ae2.fit(dataLoader,lossFunc="l1loss", opt="adam", nepochs=10)
+    ae2.save()
+    ae2.predict(x_tensor)
+    # print(len(dataLoader))
+    # print(ae2.get_latent_space(dataLoader).shape)
+    # latent = ae2.predict(x_tensor)
+    # dl = DataLoader(latent.reshape(1000,24,6,6), batch_size=32, shuffle=False)
+    # for b,_ in dl:
+    #     print(ae2.decode(b).shape)
