@@ -74,3 +74,5 @@ class UNet(nn.Module):
     
     def reproduction_train(self, trainset):
         pass
+
+any(map(lambda x:x%1, conv_dim))

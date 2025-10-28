@@ -53,7 +53,7 @@ class autoAE(nn.Module):
         print(f"Using device: {self.device}")
             
     def forward(self, x):
-        z =  self.encoder(x)
+        z = self.encoder(x)
         y = self.decoder(z)
         y = F.sigmoid(y)
         return y
