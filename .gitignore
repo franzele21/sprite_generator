@@ -8,3 +8,4 @@ clean_sprites.csv
 loops_summary.csv
 model/embedding/trained/
 model/RNN/trained/
+.vscode/
