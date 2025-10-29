@@ -13,24 +13,29 @@ from datetime import datetime
 import numpy as np
 
 conv_layers_config = [
-        [1, 16, 2, 1, 1], 
-        [16, 24, 2, 1, 0], 
-        [24, 32, 3, 1, 2]
-    ]
+        [1, 8, 2, 1, 0], 
+        [8, 16, 3, 2, 1], 
+        [16, 24, 4, 2, 2],
+        [24, 32, 4, 1, 2],
+        [32, 32, 4, 2, 2],
+        [32, 32, 4, 4, 1]
+]
+
 
 
 class autoAE(nn.Module):
     def __init__(self, conv_config, input_dim):
+        super(autoAE, self).__init__()
+
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         rand_suffix = ''.join(random.choices(string.ascii_lowercase + string.digits, k=4))
         self.model_name = f"autoAE_{timestamp}_{rand_suffix}" 
 
         conv_calc = lambda dim_in, kernel_size, stride, padding: 1 + (floor(dim_in) + 2*padding - (kernel_size-1)-1)/stride
-        super(autoAE, self).__init__()
         self.encoder = nn.Sequential(
             *[[nn.Conv2d(*conv_config[i//3]),
-            nn.LeakyReLU(0.1),
-            nn.BatchNorm2d(conv_layers_config[i//3][1])][i%3] for i in range(len(conv_layers_config)*3)])
+               nn.BatchNorm2d(conv_config[i//3][1]),
+               nn.LeakyReLU(0.1)][i%3] for i in range(len(conv_config)*3)])
             
         conv_dim = [input_dim]
         for i,lyr in enumerate(conv_config):
@@ -45,8 +50,9 @@ class autoAE(nn.Module):
             if x:
                 deconv_config[i].append(1)
         self.decoder = nn.Sequential(
-            *[[nn.ConvTranspose2d(*deconv_config[i//2]),
-            nn.ReLU()][i%2] for i in range(len(deconv_config)*2)])
+            *[[nn.ConvTranspose2d(*deconv_config[i//3]),   
+               nn.BatchNorm2d(deconv_config[i//3][1]),
+               nn.LeakyReLU(0.1)][i%3] for i in range(len(deconv_config)*3)])
         
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.to(self.device)
@@ -172,6 +178,7 @@ if __name__ == "__main__":
         elif mode == 2:
             X[i,0] = np.rot90(X[i,0], k=3)
     x_tensor = torch.tensor(X, dtype=torch.float32)
+
 
     # create batch
     dataset = TensorDataset(x_tensor, x_tensor)
