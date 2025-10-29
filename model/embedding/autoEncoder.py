@@ -24,7 +24,7 @@ conv_layers_config = [
 
 
 class autoAE(nn.Module):
-    def __init__(self, conv_config, input_dim):
+    def __init__(self, conv_config, input_dim, load_path=None):
         super(autoAE, self).__init__()
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
