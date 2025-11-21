@@ -73,7 +73,9 @@ class autoAE(nn.Module):
         crit_methods={
             "mseloss":nn.MSELoss,
             "l1loss":nn.L1Loss,
-            "cel":nn.CrossEntropyLoss
+            "cel":nn.CrossEntropyLoss,
+            "bcel":nn.BCELoss,
+            "smoothl1loss":nn.SmoothL1Loss
         }
         if lossFunc not in crit_methods:
             lossFunc = "mseloss"
@@ -220,9 +222,13 @@ class autoAE(nn.Module):
 
 if __name__ == "__main__":
     # read data
-    df = pd.read_csv("./clean_sprites.csv")
+    df = pd.read_csv("./sprites.csv")
     # orientation = df.iloc[:, 2].values
-    df = df.iloc[:,2:]
+    pkmn_nb = df.iloc[:, 0].values
+    unique_pkmn = np.unique(pkmn_nb)
+    np.random.shuffle(unique_pkmn)
+
+    df = df.iloc[:,3:]
     X = df.values.astype('float32')
 
     # process data
@@ -234,23 +240,34 @@ if __name__ == "__main__":
     #         X[i,0] = np.rot90(X[i,0], k=3)
     x_tensor = torch.tensor(X, dtype=torch.float32)
 
+    # split by pkmn_nb
+    n_train = int(0.95 * len(unique_pkmn))
+    train_pkmn = set(unique_pkmn[:n_train])
+    test_pkmn = set(unique_pkmn[n_train:])
+    train_mask = np.isin(pkmn_nb, list(train_pkmn))
+    test_mask = np.isin(pkmn_nb, list(test_pkmn))
 
-    # create batch
-    dataset = TensorDataset(x_tensor, x_tensor)
-    dataLoader = DataLoader(dataset, batch_size=32, shuffle=True)
+    # split data
+    X_train = x_tensor[train_mask]
+    X_test = x_tensor[test_mask]
+    train_data = TensorDataset(X_train, X_train)
+    test_data = TensorDataset(X_test, X_test)
 
+    # DataLoaders
+    train_loader = DataLoader(train_data, batch_size=32, shuffle=True)
+    test_loader = DataLoader(test_data, batch_size=32, shuffle=False)
     # create and train autoencoder
-    # ae = autoAE(conv_config=conv_layers_config, input_dim=64)
+    ae = autoAE(conv_config=conv_layers_config, input_dim=64)
 
-    # ae.fit(dataLoader,lossFunc="l1loss", opt="adam")
-    # ae.save()
-    # ae.predict(x_tensor)
+    ae.fit(train_loader,lossFunc="l1loss", opt="adam")
+    ae.save()
+    ae.predict(X_test)
 
     # load and predict
-    ae2 = autoAE(conv_config=conv_layers_config, input_dim=64, load_path="./model/embedding/trained/autoAE_20251026_194448_mm34.pt")
-    ae2.fit(dataLoader,lossFunc="l1loss", opt="adam", nepochs=10)
-    ae2.save()
-    ae2.predict(x_tensor)
+    # ae2 = autoAE(conv_config=conv_layers_config, input_dim=64, load_path="./model/embedding/trained/autoAE_20251026_194448_mm34.pt")
+    # ae2.fit(dataLoader,lossFunc="l1loss", opt="adam", nepochs=10)
+    # ae2.save()
+    # ae2.predict(x_tensor)
     # print(len(dataLoader))
     # print(ae2.get_latent_space(dataLoader).shape)
     # latent = ae2.predict(x_tensor)

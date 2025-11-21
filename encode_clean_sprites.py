@@ -7,23 +7,25 @@ import torch
 from model.embedding.autoEncoder import autoAE, conv_layers_config
 
 
-def load_and_preprocess(csv_path, nrows=None):
+def load_and_preprocess(csv_path, nrows=None, idx_col=2):
     df = pd.read_csv(csv_path, nrows=nrows)
     # existing code in autoEncoder.py uses df = df.iloc[:,2:]
     if df.shape[1] > 2:
-        df_proc = df.iloc[:, 2:]
-        df_idx = df.iloc[:,:2]
+        df_proc = df.iloc[:, idx_col:]
+        df_idx = df.iloc[:,:idx_col]
     else:
         df_proc = df
+    
+    print(df_proc.iloc[0])
     X = df_proc.values.astype('float32')
     # assume 64x64 images stored row-wise
     X = X.reshape(-1, 1, 64, 64) / 255.0
     return X, df_idx
 
 
-def encode_to_csv(input_csv, model_path, output_csv, batch_size=64, nrows=None, verify=False):
+def encode_to_csv(input_csv, model_path, output_csv, batch_size=64, nrows=None, idx_col=2, verify=False):
     print(f"Loading data from: {input_csv} (nrows={nrows})")
-    X, df_idx = load_and_preprocess(input_csv, nrows=nrows)
+    X, df_idx = load_and_preprocess(input_csv, nrows=nrows, idx_col=idx_col)
     N = X.shape[0]
     print(f"Found {N} images -> tensor shape {X.shape}")
 
@@ -84,10 +86,11 @@ def main():
     p.add_argument("--output-csv", default="./clean_sprites_latents.csv", help="Output CSV path")
     p.add_argument("--batch-size", type=int, default=64)
     p.add_argument("--nrows", type=int, default=None, help="Limit number of rows (for quick test)")
+    p.add_argument("--index-col", type=int, default=2, help="Number of index columns to retain in output CSV")
     p.add_argument("--verify", action="store_true", help="Verify flatten/reshape correctness on first batch")
 
     args = p.parse_args()
-    encode_to_csv(args.input_csv, args.model_path, args.output_csv, batch_size=args.batch_size, nrows=args.nrows, verify=args.verify)
+    encode_to_csv(args.input_csv, args.model_path, args.output_csv, batch_size=args.batch_size, nrows=args.nrows,idx_col=args.index_col, verify=args.verify)
 
 
 if __name__ == '__main__':
