@@ -5,6 +5,7 @@ __pycache__
 *.zip
 clean_sprites_latents.csv
 clean_sprites.csv
+sprites_latents.csv
 loops_summary.csv
 model/embedding/trained/
 model/RNN/trained/
